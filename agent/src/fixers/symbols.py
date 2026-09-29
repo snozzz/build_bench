@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from ..changes import ChangeSet, EditError
+from ..changes import ChangeSet, EditError, split_lines
 from ..context import Context
 
 _BLOCK_HEADER = re.compile(r"^--- (debian/\S+) \(")
@@ -96,7 +96,7 @@ def apply(ctx: Context, changes: ChangeSet) -> list[str]:
                 text = changes.read_text(rel)
             except (EditError, OSError):
                 continue
-            lines = text.splitlines(keepends=True)
+            lines = split_lines(text)
             touched = 0
             for index, line in enumerate(lines):
                 stripped = line.strip()
@@ -117,7 +117,7 @@ def apply(ctx: Context, changes: ChangeSet) -> list[str]:
                 text = changes.read_text(diff.file)
             except (EditError, OSError):
                 continue
-            lines = text.splitlines(keepends=True)
+            lines = split_lines(text)
             header = next((i for i, l in enumerate(lines) if l and not l[0].isspace() and not l.startswith(("#", "|", "*"))), None)
             if header is None:
                 continue

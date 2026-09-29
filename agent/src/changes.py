@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import difflib
 import os
+import re
 from pathlib import Path
 
 
@@ -17,6 +18,23 @@ class EditError(ValueError):
 
 
 _FORBIDDEN_PARTS = {".pc", ".git"}
+# Characters that str.splitlines() treats as line breaks besides "\n" / "\r\n". A
+# splitlines()-based diff generator (like the Starter Kit's) mangles files containing them.
+_RISKY_BREAKS = re.compile("\r(?!\n)|[\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]")
+
+
+def read_utf8(path: Path) -> str:
+    """Read UTF-8 text without newline translation (Path.read_text turns CRLF into LF)."""
+    return path.read_bytes().decode("utf-8")
+
+
+def split_lines(text: str) -> list[str]:
+    """Split on "\n" only, keeping line endings."""
+    lines = text.split("\n")
+    out = [line + "\n" for line in lines[:-1]]
+    if lines[-1]:
+        out.append(lines[-1])
+    return out
 
 
 class ChangeSet:
@@ -70,10 +88,12 @@ class ChangeSet:
             self.read_text(relative)  # rejects binary / non-UTF-8 targets
         if "\0" in text:
             raise EditError("content contains NUL bytes")
+        if _RISKY_BREAKS.search(text) or (path.is_file() and _RISKY_BREAKS.search(self.read_text(relative))):
+            raise EditError(f"file contains form feeds or other unusual line breaks; not editable safely: {relative}")
         self._remember(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         mode = path.stat().st_mode if path.exists() else None
-        path.write_text(text, encoding="utf-8")
+        path.write_bytes(text.encode("utf-8"))
         if mode is not None:
             os.chmod(path, mode)
 
@@ -116,14 +136,14 @@ class ChangeSet:
     def diff(self, relative: str) -> str:
         before = self.original_text(relative)
         path = self.root / relative
-        after = path.read_text(encoding="utf-8") if path.is_file() else None
+        after = read_utf8(path) if path.is_file() else None
         return unified_diff(relative, before, after)
 
 
 def unified_diff(relative: str, before: str | None, after: str | None) -> str:
     """Unified diff (-p1 style) that also marks a missing trailing newline."""
-    old = [] if before is None else before.splitlines(keepends=True)
-    new = [] if after is None else after.splitlines(keepends=True)
+    old = [] if before is None else split_lines(before)
+    new = [] if after is None else split_lines(after)
     lines = list(
         difflib.unified_diff(
             old,

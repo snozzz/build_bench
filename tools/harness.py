@@ -7,6 +7,11 @@
   pack     git-apply repair.diff to a fresh tree and rebuild the source package (dpkg-source -b)
   case     prepare + agent + diff + pack for one Case
   batch    `case` over many Cases, writing <out>/summary.csv
+  validate run the official local validator bundle on a packed run (only Cases with a bundle)
+
+The Starter Kit generator writes created/deleted files without git mode headers, which
+`git apply` rejects; the platform documents full git headers, so the harness adds them and
+reports `creates_files` so such repairs can be tracked separately.
 
 Environment: BB_STARTER_KIT (default ~/bb/BuildBench-Agent-Baseline/starter-kit).
 """
@@ -125,7 +130,16 @@ def canonical_diff(run: Path) -> tuple[bool, str]:
     except (PatchGenerationError, OSError, UnicodeError) as error:
         (run / "repair.diff").unlink(missing_ok=True)
         return False, str(error)
+    text = (run / "repair.diff").read_bytes().decode("utf-8")
+    text = re.sub(r"^(diff --git .*\n)(--- /dev/null\n)", r"\1new file mode 100644\n\2", text, flags=re.M)
+    text = re.sub(r"^(diff --git .*\n)(--- a/.*\n\+\+\+ /dev/null\n)", r"\1deleted file mode 100644\n\2", text, flags=re.M)
+    (run / "repair.diff").write_bytes(text.encode("utf-8"))
     return True, ", ".join(changed)
+
+
+def creates_files(run: Path) -> bool:
+    diff = run / "repair.diff"
+    return diff.is_file() and bool(re.search(r"^new file mode", diff.read_text(), re.M))
 
 
 def pack(run: Path) -> tuple[bool, str]:
@@ -161,6 +175,21 @@ def pack(run: Path) -> tuple[bool, str]:
     return True, " ".join(sorted(p.name for p in out.iterdir()))
 
 
+def validate(run: Path, bundle: Path) -> tuple[bool, str]:
+    """Build the packed source with an official local validator bundle (run.sh + case/)."""
+    repaired = run / "validator-case"
+    shutil.rmtree(repaired, ignore_errors=True)
+    shutil.copytree(bundle / "case", repaired, symlinks=True, ignore=shutil.ignore_patterns("input"))
+    shutil.copytree(run / "source-package", repaired / "input")
+    out = run / "validation"
+    shutil.rmtree(out, ignore_errors=True)
+    res = sh(["bash", str(bundle / "run.sh"), "--input", str(repaired), "--output", str(out)])
+    (run / "validator.console.log").write_text(res.stdout + res.stderr)
+    result = out / "build-result.json"
+    status = json.loads(result.read_text()).get("status") if result.is_file() else "missing"
+    return res.returncode == 0 and status == "succeeded", str(status)
+
+
 def one_case(case_dir: Path, run: Path, args) -> dict:
     row = {"case_id": case_dir.name, "direction": case_dir.parent.name}
     try:
@@ -169,7 +198,7 @@ def one_case(case_dir: Path, run: Path, args) -> dict:
         row.update(exit=agent["exit"], seconds=agent["seconds"],
                    message=str(agent["result"].get("message", ""))[:300])
         ok, info = canonical_diff(run)
-        row.update(diff=ok, diff_info=info[:300])
+        row.update(diff=ok, diff_info=info[:300], creates_files=creates_files(run))
         if ok:
             ok, info = pack(run)
             row.update(pack=ok, pack_info=info[:300])
@@ -185,6 +214,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("case"); p.add_argument("case_dir", type=Path); p.add_argument("run", type=Path)
+    v = sub.add_parser("validate"); v.add_argument("run", type=Path); v.add_argument("bundle", type=Path)
     b = sub.add_parser("batch"); b.add_argument("dataset", type=Path); b.add_argument("out", type=Path)
     b.add_argument("--filter", default=""); b.add_argument("--jobs", type=int, default=4)
     for s in (p, b):
@@ -193,6 +223,10 @@ def main() -> int:
         s.add_argument("--keep", action="store_true", help="keep workspace trees")
     args = ap.parse_args()
 
+    if args.cmd == "validate":
+        ok, status = validate(args.run.resolve(), args.bundle.resolve())
+        print(json.dumps({"succeeded": ok, "status": status}))
+        return 0 if ok else 1
     if args.cmd == "case":
         args.keep = True
         print(json.dumps(one_case(args.case_dir.resolve(), args.run.resolve(), args), indent=2))
@@ -208,7 +242,7 @@ def main() -> int:
             rows.append(row)
             print(f"[{len(rows)}/{len(cases)}] {row['case_id']}: diff={row.get('diff')} pack={row.get('pack')} {row.get('message', row.get('error', ''))[:120]}", flush=True)
     rows.sort(key=lambda r: r["case_id"])
-    fields = ["case_id", "direction", "exit", "seconds", "diff", "pack", "message", "diff_info", "pack_info", "error"]
+    fields = ["case_id", "direction", "exit", "seconds", "diff", "creates_files", "pack", "message", "diff_info", "pack_info", "error"]
     with (args.out / "summary.csv").open("w", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()

@@ -47,9 +47,10 @@ def repair(ctx: context_mod.Context) -> tuple[ChangeSet | None, list[str]]:
             continue
         notes += [f"{name}: {n}" for n in fixer_notes]
 
-    patch = finalize.quilt_upstream_edits(pkg, changes, ctx.target_arch, "; ".join(notes))
-    if patch:
-        notes.append(f"upstream edits recorded as {patch}")
+    strategy = os.environ.get("ARCHFIX_PATCH_STRATEGY", "auto")
+    note = finalize.record_upstream_edits(pkg, changes, ctx.target_arch, "; ".join(notes), strategy)
+    if note:
+        notes.append(note)
     return changes, notes
 
 

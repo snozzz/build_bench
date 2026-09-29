@@ -13,12 +13,14 @@ source architecture but fails on the target architecture, editing only
    isolates the final error cascade, the first concrete errors, and referenced source lines.
 3. **Deterministic fixers** (`src/fixers/`): high-confidence repairs such as
    dpkg-gensymbols mismatches (symbols missing on the target are tagged `optional`).
-4. **Finalize** (`src/finalize.py`): for Debian `3.0 (quilt)` sources, edits to upstream
-   files are converted into a new quilt patch appended to `debian/patches/series`, and the
-   upstream files are restored, so the repair survives `dpkg-source -b` repacking.
+4. **Finalize** (`src/finalize.py`): for Debian `3.0 (quilt)` sources, upstream edits are
+   recorded as quilt hunks so `dpkg-source -b` accepts the repaired tree. They are folded
+   into the last existing patch when there is one (no new files), otherwise written as a
+   new patch appended to the series. Other formats keep direct edits.
 
 All edits go through `ChangeSet` (`src/changes.py`), which confines writes to the package
-tree, refuses binary/non-UTF-8 files, and reverts everything if the Agent fails internally.
+tree, refuses binary/non-UTF-8 files and files with unusual line breaks (form feeds, lone
+CR), preserves CRLF endings, and reverts everything if the Agent fails internally.
 
 ## Output
 
