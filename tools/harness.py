@@ -8,6 +8,8 @@
   case     prepare + agent + diff + pack for one Case
   batch    `case` over many Cases, writing <out>/summary.csv
   validate run the official local validator bundle on a packed run (only Cases with a bundle)
+  build    approximate target-arch rebuild (tools/localbuild.py) of runs: repaired and/or
+           original source, results in <run>/localbuild-{fix,orig}/result.json
 
 The Starter Kit generator writes created/deleted files without git mode headers, which
 `git apply` rejects; the platform documents full git headers, so the harness adds them and
@@ -190,6 +192,21 @@ def validate(run: Path, bundle: Path) -> tuple[bool, str]:
     return res.returncode == 0 and status == "succeeded", str(status)
 
 
+def local_build(run: Path, which: str, jobs: int, memory: str) -> dict:
+    import localbuild
+
+    case_dir = Path((run / "case-dir").read_text().strip())
+    case = json.loads((case_dir / "case.json").read_text())
+    src = run / "source-package" if which == "fix" else case_dir / case["paths"]["source_input"]
+    if not src.is_dir():
+        return {"status": "no-source"}
+    try:
+        return localbuild.build(src, case["platform"]["series"], case["platform"]["target_arch"],
+                                run / f"localbuild-{which}", jobs=jobs, memory=memory)
+    except Exception as error:
+        return {"status": "error", "error": repr(error)[:300]}
+
+
 def one_case(case_dir: Path, run: Path, args) -> dict:
     row = {"case_id": case_dir.name, "direction": case_dir.parent.name}
     try:
@@ -214,6 +231,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("case"); p.add_argument("case_dir", type=Path); p.add_argument("run", type=Path)
+    lb = sub.add_parser("build"); lb.add_argument("runs", type=Path)
+    lb.add_argument("--filter", default=""); lb.add_argument("--which", choices=("fix", "orig", "both"), default="fix")
+    lb.add_argument("--parallel", type=int, default=2); lb.add_argument("--build-jobs", type=int, default=8)
+    lb.add_argument("--memory", default="3g")
     v = sub.add_parser("validate"); v.add_argument("run", type=Path); v.add_argument("bundle", type=Path)
     b = sub.add_parser("batch"); b.add_argument("dataset", type=Path); b.add_argument("out", type=Path)
     b.add_argument("--filter", default=""); b.add_argument("--jobs", type=int, default=4)
@@ -223,6 +244,19 @@ def main() -> int:
         s.add_argument("--keep", action="store_true", help="keep workspace trees")
     args = ap.parse_args()
 
+    if args.cmd == "build":
+        runs = sorted(p for p in args.runs.iterdir()
+                      if (p / "case-dir").is_file() and re.search(args.filter, p.name)
+                      and (args.which == "orig" or (p / "source-package").is_dir()))
+        whiches = ["orig", "fix"] if args.which == "both" else [args.which]
+        jobs = [(r, w) for r in runs for w in whiches]
+        with cf.ThreadPoolExecutor(max_workers=args.parallel) as pool:
+            futures = {pool.submit(local_build, r, w, args.build_jobs, args.memory): (r, w) for r, w in jobs}
+            for future in cf.as_completed(futures):
+                r, w = futures[future]
+                res = future.result()
+                print(f"{r.name} [{w}]: {res.get('status')} {res.get('seconds', '')}s", flush=True)
+        return 0
     if args.cmd == "validate":
         ok, status = validate(args.run.resolve(), args.bundle.resolve())
         print(json.dumps({"succeeded": ok, "status": status}))

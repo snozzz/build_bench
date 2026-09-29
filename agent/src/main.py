@@ -13,6 +13,9 @@ from . import context as context_mod
 from . import finalize
 from .changes import ChangeSet
 from .fixers import FIXERS
+from .llm.client import ChatClient, LLMConfig
+from .llm.loop import Budget
+from .llm import loop as llm_loop
 
 REPORT_NAME = "archfix-report.json"
 
@@ -26,7 +29,37 @@ def _write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def repair(ctx: context_mod.Context) -> tuple[ChangeSet | None, list[str]]:
+def _budget() -> Budget:
+    budget = Budget()
+    for attr, name, cast in (("max_steps", "ARCHFIX_MAX_STEPS", int),
+                             ("max_seconds", "ARCHFIX_MAX_SECONDS", float),
+                             ("max_tokens", "ARCHFIX_MAX_TOKENS", int)):
+        value = os.environ.get(name)
+        if value:
+            setattr(budget, attr, cast(value))
+    return budget
+
+
+def model_repair(ctx: context_mod.Context, changes: ChangeSet, notes: list[str], report: dict) -> list[str]:
+    config = LLMConfig.from_env()
+    if config is None:
+        log("no LLM endpoint configured; skipping model-driven repair")
+        return []
+    client = ChatClient(config)
+    outcome = llm_loop.run(ctx, changes, client, notes, _budget(), log=log)
+    messages = outcome.pop("messages")
+    report["llm"] = {**outcome, "model": config.model}
+    try:
+        _write_json(ctx.output_dir / "archfix-transcript.json", {"messages": messages})
+    except OSError as error:
+        log(f"could not write transcript: {error!r}")
+    log(f"llm: stop={outcome['stop']} steps={outcome['steps']} tokens={client.usage.total}")
+    if outcome["summary"]:
+        return [f"llm: {outcome['summary']}"]
+    return [f"llm: stopped ({outcome['stop']}) after {outcome['steps']} steps"]
+
+
+def repair(ctx: context_mod.Context, report: dict) -> tuple[ChangeSet | None, list[str]]:
     pkg = ctx.package
     log(f"package: {pkg.kind} {pkg.name} {pkg.version} ({pkg.source_format}) at {pkg.root}")
     log(f"arch: {ctx.source_arch.isa if ctx.source_arch else '?'} -> {ctx.target_arch.isa if ctx.target_arch else '?'}")
@@ -47,6 +80,9 @@ def repair(ctx: context_mod.Context) -> tuple[ChangeSet | None, list[str]]:
             continue
         notes += [f"{name}: {n}" for n in fixer_notes]
 
+    if os.environ.get("ARCHFIX_DISABLE_LLM") != "1":
+        notes += model_repair(ctx, changes, notes, report)
+
     strategy = os.environ.get("ARCHFIX_PATCH_STRATEGY", "auto")
     note = finalize.record_upstream_edits(pkg, changes, ctx.target_arch, "; ".join(notes), strategy)
     if note:
@@ -64,7 +100,7 @@ def main() -> int:
     try:
         ctx = context_mod.load(workspace)
         report["context"] = ctx.as_dict()
-        changes, notes = repair(ctx)
+        changes, notes = repair(ctx, report)
         modified = changes.modified() if changes else []
         report["notes"] = notes
         repo_prefix = ctx.package.root.resolve().relative_to(ctx.repo.resolve())

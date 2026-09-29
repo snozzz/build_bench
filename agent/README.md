@@ -13,7 +13,12 @@ source architecture but fails on the target architecture, editing only
    isolates the final error cascade, the first concrete errors, and referenced source lines.
 3. **Deterministic fixers** (`src/fixers/`): high-confidence repairs such as
    dpkg-gensymbols mismatches (symbols missing on the target are tagged `optional`).
-4. **Finalize** (`src/finalize.py`): for Debian `3.0 (quilt)` sources, upstream edits are
+4. **Model-driven repair** (`src/llm/`): when an OpenAI-compatible endpoint is configured
+   (`ARCHFIX_LLM_BASE_URL`, `ARCHFIX_LLM_MODEL`, `ARCHFIX_LLM_API_KEY`), a bounded tool loop
+   gives the model a Case dossier (log excerpt, control/rules, source around error lines) and
+   tools to browse, search the log, and make exact edits. Budgets: `ARCHFIX_MAX_STEPS`,
+   `ARCHFIX_MAX_SECONDS`, `ARCHFIX_MAX_TOKENS`. Without an endpoint this stage is skipped.
+5. **Finalize** (`src/finalize.py`): for Debian `3.0 (quilt)` sources, upstream edits are
    recorded as quilt hunks so `dpkg-source -b` accepts the repaired tree. They are folded
    into the last existing patch when there is one (no new files), otherwise written as a
    new patch appended to the series. Other formats keep direct edits.
@@ -25,7 +30,8 @@ CR), preserves CRLF endings, and reverts everything if the Agent fails internall
 ## Output
 
 - `/workspace/output/agent-result.json`: protocol v0.1 completion record.
-- `/workspace/output/archfix-report.json`: diagnostics (context, log findings, notes).
+- `/workspace/output/archfix-report.json`: diagnostics (context, log findings, notes, LLM usage).
+- `/workspace/output/archfix-transcript.json`: model conversation, when the model ran.
 
 ## Dependencies
 
