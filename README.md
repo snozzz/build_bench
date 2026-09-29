@@ -7,9 +7,10 @@ an LLM-based Agent that repairs cross-architecture package build failures
 ## Layout
 
 ```text
+agent/            the submitted Repair Agent (agent.yaml, src/, requirements.lock, README.md)
 infra/wsl/        one-time setup of the WSL build host (Docker, binfmt, proxy tunnel)
 scripts/          developer helpers (sync code to the build host, ...)
-tools/            dataset analysis and local evaluation tooling
+tools/            dataset analysis and the local Case harness (tools/harness.py)
 ```
 
 ## Workflow
@@ -28,6 +29,8 @@ lives on the WSL build host `snoz@36.151.149.108` under `~/bb/`:
 ```bash
 ./scripts/sync-to-wsl.sh                                  # push code to WSL
 ssh snoz@36.151.149.108 'cd ~/bb && python3 build_bench/tools/analyze_cases.py data/dev/buildbench-development-cases-v0.1'
+# run the Agent on every dev Case: workspace prep, canonical diff, replay + dpkg-source -b
+ssh snoz@36.151.149.108 'cd ~/bb && python3 build_bench/tools/harness.py batch data/dev/buildbench-development-cases-v0.1 runs/batch --jobs 6'
 ```
 
 ## Key facts about the task
