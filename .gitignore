@@ -1,0 +1,14 @@
+# Large or generated content lives only on the WSL build host.
+data/
+runs/
+dist/
+results/
+*.zip
+*.tar.gz
+*.pdf
+__pycache__/
+*.pyc
+.venv/
+.env
+*.env
+.DS_Store

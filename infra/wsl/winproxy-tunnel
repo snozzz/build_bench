@@ -1,0 +1,21 @@
+#!/bin/bash
+# Expose the Windows-side Clash proxy (Windows 127.0.0.1:7897) inside WSL at 127.0.0.1:7897.
+#
+# WSL's NAT network cannot reach Windows loopback, but Windows can reach WSL sshd through
+# wslrelay (Windows 127.0.0.1:22). Windows ssh.exe therefore dials into WSL and opens a
+# reverse forward. The key is restricted in ~/.ssh/authorized_keys to that single forward:
+#   restrict,port-forwarding,permitlisten="127.0.0.1:7897",command="/bin/false" ssh-ed25519 ...
+WIN_USER="${WIN_USER:-snozn}"
+WSL_USER="${WSL_USER:-$(id -un)}"
+PORT="${PROXY_PORT:-7897}"
+
+cd "/mnt/c/Users/$WIN_USER" || exit 1
+while true; do
+  /mnt/c/Windows/System32/OpenSSH/ssh.exe -N -T \
+    -o BatchMode=yes -o ExitOnForwardFailure=yes \
+    -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+    -o StrictHostKeyChecking=accept-new \
+    -i "C:\\Users\\$WIN_USER\\.ssh\\id_wslproxy_ed25519" \
+    -R "127.0.0.1:$PORT:127.0.0.1:$PORT" "$WSL_USER@127.0.0.1" </dev/null
+  sleep 5
+done
